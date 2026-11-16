@@ -171,47 +171,66 @@ class VaadinEngine:
                     candidates.append(alias)
         return candidates
 
+    def _pick_first_visible(self, locator: Locator) -> Optional[Locator]:
+        """Iterates through matching elements and returns the first visible one, ignoring hidden templates."""
+        count = locator.count()
+        for i in range(count):
+            cand = locator.nth(i)
+            try:
+                if cand.is_visible():
+                    return cand
+            except Exception:
+                pass
+        return None
+
     def _find_clickable_accessible(self, page: Page, target: str, role: Optional[str] = None) -> Locator:
         """
         Resolves an element to click using strict accessibility locators.
         Supports Norwegian ERP aliases (e.g. Dashboard -> Oversikt, New Order -> Ny ordre).
-        Never uses CSS IDs or classes.
+        Strictly prioritizes VISIBLE elements to prevent locking onto hidden template tags.
         """
         candidates = self._get_alias_candidates(target)
 
+        # 1. Search for visible candidates across standard roles
         for cand in candidates:
-            # 1. If explicit ARIA role provided (button, link, tab, menuitem)
+            # Explicit role if specified
             if role:
-                loc = page.get_by_role(role, name=cand, exact=False)
-                if loc.count() > 0:
-                    return loc.first
+                loc = self._pick_first_visible(page.get_by_role(role, name=cand, exact=False))
+                if loc:
+                    return loc
 
-            # 2. Try button role
-            btn_loc = page.get_by_role("button", name=cand, exact=False)
-            if btn_loc.count() > 0:
-                return btn_loc.first
+            # Link role (standard for ERP navigation sidebars)
+            loc = self._pick_first_visible(page.get_by_role("link", name=cand, exact=False))
+            if loc:
+                return loc
 
-            # 3. Try link role
-            link_loc = page.get_by_role("link", name=cand, exact=False)
-            if link_loc.count() > 0:
-                return link_loc.first
+            # Button role
+            loc = self._pick_first_visible(page.get_by_role("button", name=cand, exact=False))
+            if loc:
+                return loc
 
-            # 4. Try tab role
-            tab_loc = page.get_by_role("tab", name=cand, exact=False)
-            if tab_loc.count() > 0:
-                return tab_loc.first
+            # Tab role
+            loc = self._pick_first_visible(page.get_by_role("tab", name=cand, exact=False))
+            if loc:
+                return loc
 
-            # 5. Try menuitem role
-            menu_loc = page.get_by_role("menuitem", name=cand, exact=False)
-            if menu_loc.count() > 0:
-                return menu_loc.first
+            # Menuitem role
+            loc = self._pick_first_visible(page.get_by_role("menuitem", name=cand, exact=False))
+            if loc:
+                return loc
 
-            # 6. Fallback to accessible text
-            text_loc = page.get_by_text(cand, exact=False)
-            if text_loc.count() > 0:
-                return text_loc.first
+            # Visible accessible text
+            loc = self._pick_first_visible(page.get_by_text(cand, exact=False))
+            if loc:
+                return loc
 
-        return page.get_by_text(target, exact=False).first
+        # Fallback if no visible element was detected during fast-scan
+        fallback = page.get_by_text(target, exact=False)
+        for i in range(fallback.count()):
+            if fallback.nth(i).is_visible():
+                return fallback.nth(i)
+
+        return fallback.first
 
     def _find_input_accessible(self, page: Page, target: str) -> Locator:
         """
@@ -652,12 +671,22 @@ class VaadinEngine:
                     elif action_type == "click":
                         self._wait_for_vaadin_network_idle(page)
                         clean_t = target.strip(" .,;:!?\"'")
+
+                        # Dismiss any lingering popups/overlays to ensure sidebar is interactive
+                        try:
+                            page.keyboard.press("Escape")
+                        except Exception:
+                            pass
+
                         # Check: If instructed to navigate to or click Dashboard, but already on it
                         if clean_t.lower() in ("dashboard", "hjem", "home"):
                             dash_loc = page.get_by_text("Dashboard", exact=False)
-                            if dash_loc.count() > 0 and dash_loc.first.is_visible():
+                            if dash_loc.count() > 0:
                                 try:
-                                    dash_loc.first.click(timeout=3000)
+                                    for i in range(dash_loc.count()):
+                                        if dash_loc.nth(i).is_visible():
+                                            dash_loc.nth(i).click(timeout=3000)
+                                            break
                                     self._wait_for_vaadin_network_idle(page)
                                 except Exception:
                                     pass
@@ -681,29 +710,27 @@ class VaadinEngine:
                         self._wait_for_vaadin_network_idle(page)
                         clean_comp = target.strip(" .,;:!?\"'")
                         logger.info(f"Switching company to '{clean_comp}'...")
-                        # 1. Click company button in top header
-                        header_btn = page.locator("header").get_by_role("button").first
-                        if not header_btn.is_visible():
-                            header_btn = page.get_by_role("button", name=re.compile(r"company|bedrift|virksomhet|nordick", re.I)).first
+
+                        # 1. Click company selector button at top-left
+                        comp_btn = page.get_by_text(re.compile(r"company|bedrift|virksomhet|nordick", re.I)).first
                         try:
-                            header_btn.click(timeout=4000)
+                            comp_btn.click(timeout=4000)
                             self._wait_for_vaadin_network_idle(page)
                         except Exception:
-                            pass
+                            header_btn = page.locator("header").get_by_role("button").first
+                            if header_btn.is_visible():
+                                header_btn.click()
 
-                        # 2. Select target company from list or search box
+                        # 2. Select target company from list
                         comp_item = page.get_by_text(clean_comp, exact=False)
                         if comp_item.count() > 0:
-                            comp_item.first.click()
-                        else:
-                            # Try searching inside dropdown
-                            search_box = page.get_by_placeholder(re.compile(r"search|søk", re.I))
-                            if search_box.count() > 0 and search_box.first.is_visible():
-                                search_box.first.fill(clean_comp)
-                                page.keyboard.press("Enter")
-                                comp_item = page.get_by_text(clean_comp, exact=False)
-                                if comp_item.count() > 0:
-                                    comp_item.first.click()
+                            for i in range(comp_item.count()):
+                                if comp_item.nth(i).is_visible():
+                                    comp_item.nth(i).click()
+                                    break
+
+                        # Close any lingering dropdowns
+                        page.keyboard.press("Escape")
                         self._wait_for_vaadin_network_idle(page)
 
                     # 5. SET LANGUAGE (Profile Language Switcher)
@@ -711,6 +738,10 @@ class VaadinEngine:
                         self._wait_for_vaadin_network_idle(page)
                         lang_name = target.strip(" .,;:!?\"'") or "English"
                         logger.info(f"Opening profile and setting language to '{lang_name}'...")
+
+                        # Dismiss any open dialogs first
+                        page.keyboard.press("Escape")
+
                         # 1. Click profile avatar at top right
                         profile_btn = page.locator("header").get_by_role("button").last
                         if not profile_btn.is_visible():
@@ -724,7 +755,10 @@ class VaadinEngine:
                         # 2. Select language
                         lang_opt = page.get_by_text(lang_name, exact=False)
                         if lang_opt.count() > 0:
-                            lang_opt.first.click()
+                            for i in range(lang_opt.count()):
+                                if lang_opt.nth(i).is_visible():
+                                    lang_opt.nth(i).click()
+                                    break
                             self._wait_for_vaadin_network_idle(page)
 
                         # 3. Click Save button if present
@@ -733,7 +767,8 @@ class VaadinEngine:
                             save_btn.first.click()
                             self._wait_for_vaadin_network_idle(page)
 
-                        # 4. Refresh to apply changes
+                        # 4. Refresh to apply changes and close modals
+                        page.keyboard.press("Escape")
                         page.reload()
                         self._wait_for_vaadin_network_idle(page)
 
