@@ -1,0 +1,16 @@
+# ==============================================================================
+# Autonomous Vaadin Testing Agent - Dependencies
+# 100% Free, Open-Source QA Automation Suite
+# ==============================================================================
+
+# Core Browser Automation & Testing
+playwright>=1.40.0
+pytest>=7.4.0
+pytest-playwright>=0.4.0
+
+# User Interfaces (CLI and Web)
+streamlit>=1.30.0
+rich>=13.7.0
+
+# HTTP Client for Local Ollama LLM Translation
+requests>=2.31.0
